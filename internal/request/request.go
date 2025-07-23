@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"strconv"
 
 	"github.com/bdbrwr/bootdev_http_protocol/internal/headers"
 )
@@ -13,6 +14,7 @@ type parserState string
 const (
 	StateInit    parserState = "init"
 	StateHeaders parserState = "headers"
+	StateBody    parserState = "body"
 	StateDone    parserState = "done"
 	StateError   parserState = "error"
 )
@@ -20,7 +22,22 @@ const (
 type Request struct {
 	RequestLine RequestLine
 	Headers     *headers.Headers
+	Body        string
 	state       parserState
+}
+
+func getInt(header *headers.Headers, name string, defaultValue int) int {
+	valueStr, exists := header.Get(name)
+	if !exists {
+		return defaultValue
+	}
+
+	value, err := strconv.Atoi(valueStr)
+	if err != nil {
+		return defaultValue
+	}
+
+	return value
 }
 
 type RequestLine struct {
@@ -33,6 +50,7 @@ func newRequest() *Request {
 	return &Request{
 		state:   StateInit,
 		Headers: headers.NewHeaders(),
+		Body:    "",
 	}
 }
 
@@ -69,16 +87,26 @@ func parseRequestLine(b []byte) (*RequestLine, int, error) {
 	return rl, read, nil
 }
 
+func (r *Request) hasBody() bool {
+	//TODO: When doing chunked encoding, update this method
+	length := getInt(r.Headers, "content-length", 0)
+	return length != 0
+}
+
 func (r *Request) parse(data []byte) (int, error) {
 	read := 0
 
 outer:
 	for {
 		currentData := data[read:]
+		if len(currentData) == 0 {
+			break outer
+		}
 
 		switch r.state {
 		case StateError:
 			return 0, ErrorRequestInErrorState
+
 		case StateInit:
 			rl, n, err := parseRequestLine(currentData)
 			if err != nil {
@@ -94,9 +122,9 @@ outer:
 			r.state = StateHeaders
 
 		case StateHeaders:
-
 			n, done, err := r.Headers.Parse(currentData)
 			if err != nil {
+				r.state = StateError
 				return 0, err
 			}
 
@@ -107,6 +135,24 @@ outer:
 			read += n
 
 			if done {
+				if r.hasBody() {
+					r.state = StateBody
+				} else {
+					r.state = StateDone
+				}
+			}
+
+		case StateBody:
+			length := getInt(r.Headers, "content-length", 0)
+			if length == 0 {
+				panic("chunked not implemented")
+			}
+
+			remaining := min(length-len(r.Body), len(currentData))
+			r.Body += string(currentData[:remaining])
+			read += remaining
+
+			if len(r.Body) == length {
 				r.state = StateDone
 			}
 
