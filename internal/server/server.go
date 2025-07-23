@@ -5,19 +5,34 @@ import (
 	"io"
 	"net"
 
+	"github.com/bdbrwr/bootdev_http_protocol/internal/request"
 	"github.com/bdbrwr/bootdev_http_protocol/internal/response"
 )
 
 type Server struct {
-	closed bool
+	closed  bool
+	handler Handler
 }
+
+type HandlerError struct {
+	StatusCode response.StatusCode
+	Message    string
+}
+
+type Handler func(w *response.Writer, req *request.Request)
 
 func runConnection(s *Server, conn io.ReadWriteCloser) {
 	defer conn.Close()
-	headers := response.GetDefaultHeaders(0)
 
-	response.WriteStatusLine(conn, response.StatusOK)
-	response.WriteHeaders(conn, headers)
+	responseWriter := response.NewWriter(conn)
+	r, err := request.RequestFromReader(conn)
+	if err != nil {
+		responseWriter.WriteStatusLine(response.StatusBadRequest)
+		responseWriter.WriteHeaders(*response.GetDefaultHeaders(0))
+		return
+	}
+
+	s.handler(responseWriter, r)
 }
 
 func runServer(s *Server, listener net.Listener) {
@@ -35,12 +50,16 @@ func runServer(s *Server, listener net.Listener) {
 	}
 }
 
-func Serve(port int) (*Server, error) {
+func Serve(port int, handler Handler) (*Server, error) {
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return nil, err
 	}
-	server := &Server{closed: false}
+	server := &Server{
+		closed:  false,
+		handler: handler,
+	}
+
 	go runServer(server, listener)
 
 	return server, nil
