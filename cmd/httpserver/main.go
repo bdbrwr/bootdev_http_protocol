@@ -3,8 +3,10 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/bdbrwr/bootdev_http_protocol/internal/request"
@@ -59,9 +61,41 @@ func main() {
 		if req.RequestLine.RequestTarget == "/yourproblem" {
 			body = respond400()
 			status = response.StatusBadRequest
+
 		} else if req.RequestLine.RequestTarget == "/myproblem" {
 			body = respond500()
 			status = response.StatusInternalServerError
+
+		} else if strings.HasPrefix(req.RequestLine.RequestTarget, "/httpbin/stream") {
+			target := req.RequestLine.RequestTarget
+			res, err := http.Get("https://httpbin.org/" + target[len("/httpbin/"):])
+			if err != nil {
+				body = respond500()
+				status = response.StatusInternalServerError
+			} else {
+				defer res.Body.Close()
+
+				w.WriteStatusLine(response.StatusOK)
+
+				h.Delete("Content-Length")
+				h.Set("Transfer-Encoding", "chunked")
+				h.Replace("Content-Type", "text/plain")
+				w.WriteHeaders(*h)
+
+				for {
+					data := make([]byte, 32)
+					n, err := res.Body.Read(data)
+					if err != nil {
+						break
+					}
+
+					w.WriteBody([]byte(fmt.Sprintf("%x\r\n", n)))
+					w.WriteBody(data[:n])
+					w.WriteBody([]byte("\r\n"))
+				}
+				w.WriteBody([]byte("0\r\n\r\n"))
+				return
+			}
 		}
 
 		h.Replace("Content-length", fmt.Sprintf("%d", len(body)))
